@@ -7,11 +7,12 @@ import json
 from pathlib import Path
 
 from rag import config
-from rag.chunker import save_chunks
-from rag.document_loader import save_clean_text
-from rag.embeddings import build_index, ensure_index
+from rag.chunker import load_chunks, save_chunks
+from rag.document_loader import extract_docx_text, save_clean_text
+from rag.embeddings import build_index, ensure_index, index_stats, load_vector_index
 from rag.generator import HRPolicyAssistant
 from rag.memory import ConversationMemory
+from rag.retriever import PolicyRetriever
 
 
 SMOKE_QUESTIONS = [
@@ -20,6 +21,9 @@ SMOKE_QUESTIONS = [
     ("Can I work from home?", {"3.4"}),
     ("What PPE do I need?", {"6.5", "7.7"}),
     ("What is the drug policy?", {"6.3"}),
+    ("How does overtime work?", {"3.3"}),
+    ("What if my paycheck is wrong?", {"4.5"}),
+    ("How do performance reviews work?", {"9.3"}),
 ]
 
 
@@ -35,6 +39,60 @@ def rebuild_pipeline() -> str:
 
 def ensure_pipeline() -> None:
     ensure_index()
+
+
+def debug_rag(test_query: str = "How does FMLA work?") -> None:
+    print("Resolved project root:", config.PROJECT_ROOT)
+    print("HR policy file path:", config.RAW_POLICY_PATH)
+    print("HR policy file exists:", config.RAW_POLICY_PATH.exists())
+    if config.RAW_POLICY_PATH.exists():
+        print("HR policy file size:", config.RAW_POLICY_PATH.stat().st_size)
+    extracted = extract_docx_text(config.RAW_POLICY_PATH)
+    print("Extracted text character count:", len(extracted))
+    print("First 500 characters of extracted text:")
+    print(extracted[:500])
+
+    save_clean_text()
+    save_chunks()
+    chunks = load_chunks()
+    print("Number of chunks created:", len(chunks))
+    print("First 3 chunk IDs/titles:")
+    for chunk in chunks[:3]:
+        print(f"- {chunk['chunk_id']} | Section {chunk['subsection']} | {chunk['title']}")
+
+    meta = ensure_index()
+    index = load_vector_index()
+    ntotal, dimension = index_stats(index)
+    print("FAISS vector count:", ntotal)
+    print("Embedding dimension:", dimension)
+    print("Index metadata:", json.dumps(meta, indent=2))
+
+    retriever = PolicyRetriever()
+    print("Test query:", test_query)
+    raw_results = retriever.raw_vector_search(test_query, top_k=5)
+    print("Top 5 raw FAISS results with scores/distances:")
+    for result in raw_results[:5]:
+        print(
+            f"- raw={result.raw_score:.4f} vector={result.vector_score:.4f} "
+            f"keyword={result.keyword_score:.4f} | Section {result.chunk['subsection']} "
+            f"{result.chunk['title']} | {result.chunk['chunk_id']}"
+        )
+
+    final_results = retriever.retrieve(test_query, top_k=5)
+    print("Top 5 final retrieved chunks after filters:")
+    for result in final_results[:5]:
+        print(
+            f"- confidence={result.confidence:.4f} raw={result.raw_score:.4f} "
+            f"vector={result.vector_score:.4f} keyword={result.keyword_score:.4f} "
+            f"metadata={result.metadata_score:.4f} | Section {result.chunk['subsection']} "
+            f"{result.chunk['title']} | {result.chunk['chunk_id']}"
+        )
+
+    answer = HRPolicyAssistant(retriever=retriever).answer(
+        test_query, name="Alex", memory=ConversationMemory()
+    )
+    print("Final answer:")
+    print(answer.answer)
 
 
 def sources_markdown(sources: list[dict]) -> str:
@@ -59,11 +117,24 @@ def run_smoke_test(write_report: bool = True) -> list[dict]:
         result = assistant.answer(question, name="Alex", memory=memory)
         top3 = result.retrieved_sections[:3]
         hit = bool(expected_sections & set(top3))
+        raw_scores = [
+            {
+                "section": source.get("subsection"),
+                "raw_score": source.get("raw_score"),
+                "vector_score": source.get("vector_score"),
+                "keyword_score": source.get("keyword_score"),
+                "metadata_score": source.get("metadata_score"),
+                "confidence": source.get("confidence"),
+            }
+            for source in result.sources
+        ]
         item = {
             "question": question,
             "expected_sections": sorted(expected_sections),
             "retrieved_sections": result.retrieved_sections,
+            "raw_scores": raw_scores,
             "top3_hit": hit,
+            "status": "PASS" if hit and "couldn't locate" not in result.answer else "FAIL",
             "answer": result.answer,
             "sources": result.sources,
         }
@@ -71,7 +142,9 @@ def run_smoke_test(write_report: bool = True) -> list[dict]:
         print("=" * 80)
         print(f"User question: {question}")
         print(f"Retrieved sections: {', '.join(result.retrieved_sections) or 'None'}")
+        print(f"Raw scores: {json.dumps(raw_scores)}")
         print(f"Expected section appeared in top 3: {hit}")
+        print(f"Status: {item['status']}")
         print("Final chatbot answer:")
         print(result.answer)
 
@@ -108,8 +181,10 @@ def write_test_report(smoke_outputs: list[dict]) -> Path:
             [
                 f"### {item['question']}",
                 f"- Retrieved sections: {', '.join(item['retrieved_sections']) or 'None'}",
+                f"- Raw scores: `{json.dumps(item['raw_scores'])}`",
                 f"- Source citations: {'; '.join(source_citations) or 'None'}",
                 f"- Expected section appeared in top 3: {item['top3_hit']}",
+                f"- Status: {item['status']}",
                 "",
                 "Final chatbot answer:",
                 "",
@@ -230,6 +305,8 @@ def build_interface():
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the KPM HR Policy Assistant.")
     parser.add_argument("--smoke-test", action="store_true", help="Run chatbot pipeline without launching Gradio.")
+    parser.add_argument("--debug-rag", action="store_true", help="Print hard RAG diagnostics and one sample answer.")
+    parser.add_argument("--debug-query", default="How does FMLA work?", help="Question to use with --debug-rag.")
     parser.add_argument("--rebuild", action="store_true", help="Rebuild the policy index before launching.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7860)
@@ -237,6 +314,10 @@ def main() -> None:
 
     if args.rebuild:
         print(rebuild_pipeline())
+
+    if args.debug_rag:
+        debug_rag(args.debug_query)
+        return
 
     if args.smoke_test:
         run_smoke_test(write_report=True)

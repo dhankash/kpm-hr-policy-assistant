@@ -65,6 +65,17 @@ def evaluate() -> dict:
         hit1 = bool(retrieved_sections[:1] and retrieved_sections[0] in expected_sections)
         hit3 = bool(expected_sections & set(retrieved_sections[:3]))
         answer = assistant.answer(question, name="Alex", memory=ConversationMemory())
+        raw_scores = [
+            {
+                "section": source.get("subsection"),
+                "raw_score": source.get("raw_score"),
+                "vector_score": source.get("vector_score"),
+                "keyword_score": source.get("keyword_score"),
+                "metadata_score": source.get("metadata_score"),
+                "confidence": source.get("confidence"),
+            }
+            for source in answer.sources
+        ]
 
         hits_at_1.append(hit1)
         hits_at_3.append(hit3)
@@ -81,6 +92,10 @@ def evaluate() -> dict:
                 "predicted_intent": intent.intent,
                 "answer": answer.answer,
                 "sources": answer.sources,
+                "raw_scores": raw_scores,
+                "status": "PASS"
+                if hit3 and "couldn't locate" not in answer.answer.lower()
+                else "FAIL",
             }
         )
 
@@ -109,20 +124,26 @@ def write_report(results: dict) -> None:
         f"- Intent accuracy: {results['intent_accuracy']:.3f}",
         f"- Intent macro F1: {results['intent_macro_f1']:.3f}",
         "",
-        "## Retrieval Rows",
+        "## Smoke Test Outputs",
         "",
     ]
     for row in results["rows"]:
+        source_citations = [
+            f"Section {source['subsection']} {source['title']}" for source in row["sources"]
+        ]
         lines.extend(
             [
                 f"### {row['question']}",
                 f"- Expected sections: {', '.join(row['expected_sections'])}",
                 f"- Retrieved sections: {', '.join(row['retrieved_sections'])}",
+                f"- Raw scores: `{json.dumps(row['raw_scores'], ensure_ascii=False)}`",
+                f"- Source citations: {'; '.join(source_citations) or 'None'}",
                 f"- HITS@1: {row['hits_at_1']}",
                 f"- HITS@3: {row['hits_at_3']}",
                 f"- Intent: expected {row['expected_intent']}, predicted {row['predicted_intent']}",
+                f"- Status: {row['status']}",
                 "",
-                "Answer:",
+                "Final chatbot answer:",
                 "",
                 row["answer"],
                 "",

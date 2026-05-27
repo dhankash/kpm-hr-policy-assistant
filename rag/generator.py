@@ -22,18 +22,24 @@ SUBHEADING_HINTS = (
     "approval",
     "reporting",
     "tardiness",
+    "absence",
     "examples",
     "behavior",
     "testing",
     "medications",
     "employees",
     "responsibilities",
+    "issues",
+    "include",
+    "components",
 )
 
 
 def looks_like_subheading(line: str) -> bool:
     lower = line.lower()
     words = re.findall(r"[A-Za-z0-9&()'-]+", line)
+    if line.endswith(":") and len(words) <= 25:
+        return True
     if len(words) > 8 or line.endswith((".", "?", "!")):
         return False
     if not any(hint in lower for hint in SUBHEADING_HINTS):
@@ -98,7 +104,24 @@ def split_sentences(text: str) -> list[str]:
             units.append(unit)
             index = cursor
             continue
-        units.extend(sentence.strip(" -\t") for sentence in SENTENCE_RE.split(line) if sentence.strip())
+        parts = [sentence.strip(" -\t") for sentence in SENTENCE_RE.split(line) if sentence.strip()]
+        if parts and parts[-1].endswith(":") and index + 1 < len(lines):
+            details = []
+            cursor = index + 1
+            while cursor < len(lines):
+                next_line = lines[cursor]
+                if looks_like_subheading(next_line) and details:
+                    break
+                details.append(next_line.rstrip(":"))
+                if len(" ".join(details).split()) >= 42:
+                    cursor += 1
+                    break
+                cursor += 1
+            units.extend(parts[:-1])
+            units.append(f"{parts[-1]} {'; '.join(details)}")
+            index = cursor
+            continue
+        units.extend(parts)
         index += 1
 
     return units
@@ -179,13 +202,24 @@ class HRPolicyAssistant:
             memory.add_turn(question, answer, intent.intent, [])
             return AnswerResult(question, effective_query, answer, intent.intent, [], [])
 
+        if not getattr(self.retriever, "chunks", []):
+            answer = (
+                "RAG index is empty or not loaded. Please rebuild the index."
+            )
+            memory.add_turn(question, answer, "other", [])
+            return AnswerResult(question, effective_query, answer, "other", [], [])
+
         results = self.retriever.retrieve(effective_query, intent=intent, top_k=config.ANSWER_TOP_K)
-        top_confidence = results[0].confidence if results else 0.0
         has_clear_policy_signal = intent.intent != "other" or any(
-            result.metadata_score > 0.25 for result in results[:3]
+            result.keyword_score > 0.15 or result.metadata_score > 0.25 for result in results[:3]
         )
 
-        if not results or not has_clear_policy_signal or top_confidence < config.MIN_CONFIDENCE:
+        if not results:
+            answer = "RAG index is empty or not loaded. Please rebuild the index."
+            memory.add_turn(question, answer, "other", [])
+            return AnswerResult(question, effective_query, answer, "other", [], [])
+
+        if not has_clear_policy_signal:
             answer = (
                 f"Hi {display_name}, I couldn't locate that in the KPM HR Policy Manual. "
                 "You might try asking about leave, attendance, payroll, safety, conduct, "

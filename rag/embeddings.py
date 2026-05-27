@@ -7,6 +7,7 @@ import json
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -156,7 +157,21 @@ def load_vector_index(path: Path = config.FAISS_INDEX_PATH):
         return np.load(handle)
 
 
+def index_stats(index: Any) -> tuple[int, int]:
+    """Return vector count and dimension for FAISS or NumPy fallback indexes."""
+
+    if hasattr(index, "ntotal") and hasattr(index, "d"):
+        return int(index.ntotal), int(index.d)
+    if isinstance(index, np.ndarray) and index.ndim == 2:
+        return int(index.shape[0]), int(index.shape[1])
+    return 0, 0
+
+
 def search_index(index, query_vector: np.ndarray, top_k: int) -> tuple[np.ndarray, np.ndarray]:
+    ntotal, _ = index_stats(index)
+    if ntotal <= 0:
+        return np.array([], dtype="float32"), np.array([], dtype="int64")
+    top_k = min(top_k, ntotal)
     meta = json.loads(config.INDEX_META_PATH.read_text(encoding="utf-8"))
     if meta.get("index_backend", "faiss") == "faiss":
         scores, indices = index.search(query_vector.astype("float32"), top_k)
@@ -172,6 +187,8 @@ def build_index(rebuild: bool = False) -> dict:
     if rebuild or not config.PROCESSED_CHUNKS_PATH.exists():
         save_chunks()
     chunks = load_chunks(config.PROCESSED_CHUNKS_PATH)
+    if not chunks:
+        raise RuntimeError("No HR policy chunks were created; cannot build RAG index.")
     texts = [chunk_text_for_embedding(chunk) for chunk in chunks]
     bundle, vectors = fit_embedding_bundle(texts)
     index_backend = save_vector_index(vectors)
@@ -187,20 +204,46 @@ def build_index(rebuild: bool = False) -> dict:
         "model_name": bundle.model_name,
         "dimension": bundle.dimension,
         "index_backend": index_backend,
+        "index_metric": "inner_product",
         "chunk_count": len(chunks),
     }
     config.INDEX_META_PATH.write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return meta
 
 
+def validate_index_files() -> tuple[bool, str, dict]:
+    required_paths = [config.FAISS_INDEX_PATH, config.STORAGE_CHUNKS_PATH, config.INDEX_META_PATH]
+    missing = [str(path) for path in required_paths if not path.exists() or path.stat().st_size == 0]
+    if missing:
+        return False, f"missing or empty index files: {', '.join(missing)}", {}
+
+    try:
+        meta = json.loads(config.INDEX_META_PATH.read_text(encoding="utf-8"))
+        chunks = json.loads(config.STORAGE_CHUNKS_PATH.read_text(encoding="utf-8"))
+        index = load_vector_index()
+        ntotal, dimension = index_stats(index)
+    except Exception as exc:
+        return False, f"could not load index files: {exc}", {}
+
+    if not chunks:
+        return False, "storage/chunks.json is empty", meta
+    if ntotal <= 0:
+        return False, "FAISS index has zero vectors", meta
+    if ntotal != len(chunks):
+        return False, f"FAISS vector count {ntotal} does not match chunks {len(chunks)}", meta
+    if int(meta.get("chunk_count", -1)) != len(chunks):
+        return False, f"metadata chunk count {meta.get('chunk_count')} does not match chunks {len(chunks)}", meta
+    if int(meta.get("dimension", -1)) != dimension:
+        return False, f"metadata dimension {meta.get('dimension')} does not match index dimension {dimension}", meta
+    return True, "index ok", meta
+
+
 def ensure_index() -> dict:
-    if not (
-        config.FAISS_INDEX_PATH.exists()
-        and config.STORAGE_CHUNKS_PATH.exists()
-        and config.INDEX_META_PATH.exists()
-    ):
+    valid, reason, meta = validate_index_files()
+    if not valid:
+        print(f"Rebuilding RAG index from HR Policy for RAG v1.docx... ({reason})")
         return build_index(rebuild=True)
-    return json.loads(config.INDEX_META_PATH.read_text(encoding="utf-8"))
+    return meta
 
 
 def main() -> None:
