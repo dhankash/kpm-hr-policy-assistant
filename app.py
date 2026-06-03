@@ -232,74 +232,123 @@ def build_interface():
         return status
 
     with gr.Blocks(title="KPM HR Policy Assistant") as demo:
-        gr.Markdown(
-            "# KPM HR Policy Assistant\n"
-            "Ask me questions about KPM HR policies. I answer using the official policy manual and show sources."
-        )
-        memory_state = gr.State([])
-        with gr.Row():
-            name = gr.Textbox(label="Name", value="Alex", scale=1)
-            status = gr.Textbox(label="Status", value="Ready to search KPM policies.", interactive=False, scale=2)
-        chatbot = gr.Chatbot(label="Chat", type="messages", height=430, allow_tags=False)
-        with gr.Row():
-            message = gr.Textbox(
-                label="Ask a question",
-                placeholder="Example: How does FMLA work?",
-                scale=5,
-            )
-            send = gr.Button("Send", variant="primary", scale=1)
-        gr.Markdown("### Quick Questions")
-        quick_questions = [
-            "How does FMLA work?",
-            "What happens if I'm late?",
-            "Can I work from home?",
-            "What PPE do I need?",
-            "What is the dress code?",
-            "What is the drug policy?",
-            "How does overtime work?",
-            "What if my paycheck is wrong?",
-            "How do performance reviews work?",
-        ]
-        sources = gr.Markdown("No source sections retrieved.", label="Source Citations")
-        with gr.Row():
-            for question in quick_questions[:3]:
-                gr.Button(question).click(
-                    quick_submit,
-                    inputs=[gr.State(question), chatbot, memory_state, name],
-                    outputs=[chatbot, memory_state, message, status, sources],
-                )
-        with gr.Row():
-            for question in quick_questions[3:6]:
-                gr.Button(question).click(
-                    quick_submit,
-                    inputs=[gr.State(question), chatbot, memory_state, name],
-                    outputs=[chatbot, memory_state, message, status, sources],
-                )
-        with gr.Row():
-            for question in quick_questions[6:]:
-                gr.Button(question).click(
-                    quick_submit,
-                    inputs=[gr.State(question), chatbot, memory_state, name],
-                    outputs=[chatbot, memory_state, message, status, sources],
-                )
-        with gr.Row():
-            clear = gr.Button("Clear conversation")
-            rebuild_button = gr.Button("Rebuild index")
 
-        send.click(
-            submit,
-            inputs=[message, chatbot, memory_state, name],
-            outputs=[chatbot, memory_state, message, status, sources],
-        )
-        message.submit(
-            submit,
-            inputs=[message, chatbot, memory_state, name],
-            outputs=[chatbot, memory_state, message, status, sources],
-        )
-        clear.click(clear_chat, outputs=[chatbot, memory_state, status, sources])
-        rebuild_button.click(rebuild, outputs=[status])
+    # -------------------------
+    # HEADER
+    # -------------------------
+      gr.Markdown(
+          "## 👋 Welcome to the KPM HR Policy Assistant\n"
+          "I can answer questions about KPM HR policies using the official HR manual and show the source sections.\n\n"
+          "**Please begin by entering your name in the Name field above the chat.**"
+      )
+
+      memory_state = gr.State([])
+
+      # -------------------------
+      # NAME + STATUS
+      # -------------------------
+      with gr.Row():
+          name = gr.Textbox(label="Name", value="Alex", scale=1)
+          status = gr.Textbox(
+              label="Status",
+              value="Ready to search KPM policies.",
+              interactive=False,
+              scale=2
+          )
+
+      # -------------------------
+      # CHATBOT + SOURCES
+      # -------------------------
+      chatbot = gr.Chatbot(label="Chat", type="messages", height=430, allow_tags=False)
+      sources = gr.Markdown("No source sections retrieved.", label="Source Citations")
+
+      # -------------------------
+      # ASK-A-QUESTION ROW
+      # -------------------------
+      with gr.Row():
+          message = gr.Textbox(
+              label="Ask a question",
+              placeholder="Example: How does FMLA work?",
+              scale=5,
+          )
+          send = gr.Button("Send", variant="primary", scale=1)
+
+      # -------------------------
+      # ACCORDION 1 — QUICK QUESTIONS
+      # -------------------------
+      quick_questions = [
+          "How does FMLA work?",
+          "What happens if I'm late?",
+          "Can I work from home?",
+          "What PPE do I need?",
+          "What is the dress code?",
+          "What is the drug policy?",
+          "How does overtime work?",
+          "What if my paycheck is wrong?",
+          "How do performance reviews work?",
+      ]
+
+      with gr.Accordion("Quick Questions", open=False):
+          with gr.Column():
+              for question in quick_questions:
+                  gr.Button(question).click(
+                      quick_submit,
+                      inputs=[gr.State(question), chatbot, memory_state, name],
+                      outputs=[chatbot, memory_state, message, status, sources],
+                  )
+
+      # -------------------------
+      # ACCORDION 2 — BROWSE BY TOPIC
+      # -------------------------
+      topic_buttons = [
+          "1. Introduction & Company Overview",
+          "2. Employment Policies",
+          "3. Work Hours, Attendance & Scheduling",
+          "4. Compensation & Payroll",
+          "5. Benefits & Leave Policies",
+          "6. Workplace Conduct & Expectations",
+          "7. Health, Safety & Compliance",
+          "8. Technology & Data Policies",
+          "9. Performance Management",
+          "10. Disciplinary Action & Termination",
+      ]
+
+      with gr.Accordion("Browse by Topic (Main Headings)", open=False):
+          with gr.Column():
+              for topic in topic_buttons:
+                  gr.Button(topic).click(
+                      quick_submit,
+                      inputs=[gr.State(f"Tell me about {topic}"), chatbot, memory_state, name],
+                      outputs=[chatbot, memory_state, message, status, sources],
+                  )
+
+      # -------------------------
+      # CLEAR + REBUILD BUTTONS
+      # -------------------------
+      with gr.Row():
+          clear = gr.Button("Clear conversation")
+          rebuild_button = gr.Button("Rebuild index")
+
+      # -------------------------
+      # EVENT BINDINGS
+      # -------------------------
+      send.click(
+          submit,
+          inputs=[message, chatbot, memory_state, name],
+          outputs=[chatbot, memory_state, message, status, sources],
+      )
+
+      message.submit(
+          submit,
+          inputs=[message, chatbot, memory_state, name],
+          outputs=[chatbot, memory_state, message, status, sources],
+      )
+
+      clear.click(clear_chat, outputs=[chatbot, memory_state, status, sources])
+      rebuild_button.click(rebuild, outputs=[status])
 
     return demo
+
 
 
 def main() -> None:
@@ -324,7 +373,7 @@ def main() -> None:
         return
 
     demo = build_interface()
-    demo.launch(server_name=args.host, server_port=args.port)
+    demo.launch(server_name=args.host, server_port=args.port, share=True)
 
 
 if __name__ == "__main__":
